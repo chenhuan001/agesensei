@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agesensei"
+version = "0.1.0"
+description = "Multi-Agent System for Anti-Aging Drug Target Discovery — LLM orchestration, protein structure prediction (Protenix/AlphaFold3-class), ESM-2 analysis, and CADD pipelines"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "AgeSensei Contributors" },
+]
+keywords = ["drug-discovery", "aging", "multi-agent", "protenix", "alphafold3", "cadd", "esm2", "ai-agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "pydantic>=2.0",
+    "httpx>=0.25",
+    "typer>=0.9",
+    "rich>=13.0",
+    "anthropic>=0.40",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+esm = [
+    "torch>=2.0",
+    "transformers>=4.30",
+    "fair-esm>=2.0",
+]
+structure = [
+    "protenix>=1.0",
+]
+cadd = [
+    "rdkit",
+    "meeko>=0.5",
+]
+distributed = [
+    "torch>=2.0",
+    "deepspeed>=0.12",
+    "transformers>=4.30",
+    "fair-esm>=2.0",
+]
+all = [
+    "agesensei[esm,structure,cadd,distributed]",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+agesensei = "agesensei.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agesensei", "src/affinity_ensemble"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
