@@ -25,24 +25,38 @@ class ESMWrapper:
     Uses lazy loading — model is only downloaded/loaded on first use.
     Default model: esm2_t33_650M_UR50D (650M params, good balance of speed/quality)
     For faster inference: esm2_t6_8M_UR50D (8M params)
+
+    Supports loading fine-tuned checkpoints from the finetune pipeline:
+        esm = ESMWrapper(model_name="artifacts/finetune/best")
     """
 
     def __init__(self, model_name: str | None = None):
-        self.model_name = model_name or config.esm.model_name
+        self.model_name = model_name or config.esm.finetuned_path or config.esm.model_name
         self.device = config.esm.device
         self._model = None
         self._tokenizer = None
 
     def _load(self):
-        """Lazy load model and tokenizer."""
+        """Lazy load model and tokenizer.
+
+        Supports both HuggingFace model IDs and local fine-tuned checkpoint paths.
+        """
         if self._model is not None:
             return
 
+        from pathlib import Path
         from transformers import AutoTokenizer, EsmForMaskedLM
 
-        print(f"  Loading ESM-2 model: {self.model_name}...")
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self._model = EsmForMaskedLM.from_pretrained(self.model_name)
+        model_path = self.model_name
+        is_local = Path(model_path).exists() if model_path else False
+
+        if is_local:
+            print(f"  Loading fine-tuned ESM-2 from: {model_path}")
+        else:
+            print(f"  Loading ESM-2 model: {model_path}...")
+
+        self._tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self._model = EsmForMaskedLM.from_pretrained(model_path)
         self._model.to(self.device)
         self._model.eval()
         print(f"  Model loaded on {self.device}")

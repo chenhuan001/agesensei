@@ -83,5 +83,61 @@ def predict_structure(
         console.print(f"  Time: {result.prediction_time_sec:.1f}s  Residues: {result.num_residues}")
 
 
+@app.command()
+def finetune(
+    data: str = typer.Argument(..., help="Training data CSV path"),
+    val_data: str = typer.Option(None, help="Validation data CSV (auto-split if omitted)"),
+    task: str = typer.Option("mlm", help="Task: mlm or mutation_cls"),
+    model: str = typer.Option("facebook/esm2_t33_650M_UR50D", help="Base model"),
+    output: str = typer.Option("artifacts/finetune", help="Output directory"),
+    epochs: int = typer.Option(5, help="Training epochs"),
+    batch_size: int = typer.Option(4, help="Batch size per GPU"),
+    lr: float = typer.Option(2e-5, help="Learning rate"),
+    bf16: bool = typer.Option(False, help="Use bfloat16 mixed precision"),
+):
+    """Fine-tune ESM-2 on aging-related protein data.
+
+    Supports domain-adaptive MLM and mutation effect classification.
+    For multi-GPU, use torchrun or deepspeed launcher directly.
+    """
+    from agesensei.infra.distributed.finetune.trainer import ESMFineTuner, setup_distributed
+
+    console.print(f"[bold green]AgeSensei[/] — Fine-tuning ESM-2 ({task})")
+    console.print(f"  Data: {data}")
+    console.print(f"  Model: {model}")
+    console.print(f"  Output: {output}")
+
+    local_rank = setup_distributed()
+    trainer = ESMFineTuner(
+        model_name=model,
+        task=task,
+        output_dir=output,
+        learning_rate=lr,
+        batch_size=batch_size,
+        epochs=epochs,
+        bf16=bf16,
+        local_rank=local_rank,
+    )
+    trainer.train(data, val_data)
+    console.print(f"[bold green]Done![/] Fine-tuned model saved to {output}/best/")
+
+
+@app.command()
+def prepare_finetune_data(
+    output: str = typer.Option("data/finetune", help="Output directory"),
+    task: str = typer.Option("both", help="Task: mlm, mutation_cls, or both"),
+):
+    """Prepare training data from GenAge aging genes.
+
+    Downloads protein sequences from UniProt and generates synthetic
+    mutation labels for fine-tuning ESM-2.
+    """
+    from agesensei.infra.distributed.finetune.prepare_data import prepare_data
+
+    console.print(f"[bold green]AgeSensei[/] — Preparing fine-tuning data")
+    asyncio.run(prepare_data(output, task))
+    console.print(f"[bold green]Done![/] Data saved to {output}/")
+
+
 if __name__ == "__main__":
     app()

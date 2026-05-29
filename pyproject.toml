@@ -52,6 +52,7 @@ distributed = [
     "deepspeed>=0.12",
     "transformers>=4.30",
     "fair-esm>=2.0",
+    "datasets>=2.14",
 ]
 all = [
     "agesensei[esm,structure,cadd,distributed]",

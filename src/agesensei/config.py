@@ -23,6 +23,7 @@ class ESMConfig(BaseModel):
     """ESM protein model configuration."""
 
     model_name: str = "facebook/esm2_t33_650M_UR50D"
+    finetuned_path: str = ""  # path to fine-tuned checkpoint (overrides model_name if set)
     device: str = "cpu"  # "cuda" if GPU available
     batch_size: int = 4
 
