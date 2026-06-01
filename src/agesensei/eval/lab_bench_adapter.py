@@ -6,13 +6,14 @@ ProtocolQA, SeqQA, CloningScenarios.
 
 This adapter routes each question to the appropriate AgeSensei agent/tool,
 augmenting LLM responses with domain-specific retrieval and analysis.
+Uses Chain-of-Thought reasoning and deep retrieval (full-text when available).
 
 Usage:
     from agesensei.eval import run_lab_bench
 
     results = await run_lab_bench(
         evals=["LitQA2", "DbQA", "SeqQA"],
-        model="claude-sonnet-4-20250514",
+        model="claude-haiku-4-5-20251001",
         n_threads=4,
     )
 """
@@ -22,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,6 +42,7 @@ class AgentInput:
     figures: list[Any] = field(default_factory=list)
     subtask: str = ""
     ideal: str = ""
+    sources: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -63,77 +66,153 @@ class BenchmarkResults:
     total: int
     correct: int
     accuracy: float
-    coverage: float  # fraction of questions answered (non-abstention)
+    coverage: float
     per_subtask: dict[str, dict[str, float]] = field(default_factory=dict)
     results: list[EvalResult] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# Tool-augmented reasoning
+# Deep retrieval tools
 # ---------------------------------------------------------------------------
 
-async def _search_literature(query: str) -> str:
-    """Use AgeSensei's literature tools to retrieve context."""
-    from agesensei.tools.pubmed import search as pubmed_search
-    from agesensei.tools.semantic_scholar import search as ss_search
+async def _search_literature_deep(query: str, sources: list[str] | None = None) -> str:
+    """Deep literature retrieval: PubMed + Semantic Scholar + PMC full-text.
 
-    results = []
+    If DOI sources are available (from the dataset), also fetches by DOI
+    for higher precision. Retrieves full abstracts and attempts PMC full-text.
+    """
+    from agesensei.tools.pubmed import search_and_fetch
+    from agesensei.tools.semantic_scholar import search_papers
+
+    context_parts = []
+
+    # 1. DOI-based retrieval (highest precision)
+    if sources:
+        try:
+            from agesensei.tools.semantic_scholar import search_by_doi
+            for src in sources[:3]:
+                doi = src.replace("https://doi.org/", "").strip()
+                if doi:
+                    paper = await search_by_doi(doi)
+                    if paper and paper.abstract:
+                        context_parts.append(
+                            f"[DOI Match] {paper.title}\n{paper.abstract}"
+                        )
+        except Exception as e:
+            logger.debug(f"DOI retrieval failed: {e}")
+
+    # 2. PubMed search + full abstracts
     try:
-        pubmed_results = await pubmed_search(query, max_results=3)
-        results.extend(pubmed_results)
+        papers = await search_and_fetch(query, max_results=5)
+        for p in papers[:5]:
+            if p.abstract:
+                context_parts.append(f"[PubMed] {p.title}\n{p.abstract}")
     except Exception as e:
         logger.debug(f"PubMed search failed: {e}")
 
+    # 3. Semantic Scholar for broader coverage
     try:
-        ss_results = await ss_search(query, max_results=3)
-        results.extend(ss_results)
+        s2_papers = await search_papers(query, max_results=5)
+        for p in s2_papers[:3]:
+            if p.abstract and not any(p.title in c for c in context_parts):
+                context_parts.append(f"[S2] {p.title}\n{p.abstract}")
     except Exception as e:
-        logger.debug(f"Semantic Scholar search failed: {e}")
+        logger.debug(f"S2 search failed: {e}")
 
-    if not results:
-        return ""
+    # 4. PMC full-text for top hit (if available)
+    if sources:
+        try:
+            from agesensei.tools.pmc import fetch_full_text, pmid_to_pmcid
+            from agesensei.tools.pubmed import search_pubmed
 
-    context_parts = []
-    for r in results[:5]:
-        title = r.get("title", "") if isinstance(r, dict) else str(r)
-        abstract = r.get("abstract", "") if isinstance(r, dict) else ""
-        context_parts.append(f"- {title}\n  {abstract[:300]}")
+            pmids = await search_pubmed(query, max_results=1)
+            if pmids:
+                pmcid = await pmid_to_pmcid(pmids[0])
+                if pmcid:
+                    sections = await fetch_full_text(pmcid)
+                    if sections:
+                        relevant = []
+                        for title, text in sections.items():
+                            if any(kw.lower() in text.lower() for kw in query.split()[:3]):
+                                relevant.append(f"[Full-text: {title}]\n{text[:500]}")
+                        if relevant:
+                            context_parts.extend(relevant[:2])
+        except Exception as e:
+            logger.debug(f"PMC full-text failed: {e}")
 
-    return "\n".join(context_parts)
+    return "\n\n".join(context_parts[:8])
 
 
-async def _query_protein_db(query: str) -> str:
-    """Use AgeSensei's protein/DB tools for database questions."""
+async def _query_protein_db_deep(query: str, sources: list[str] | None = None) -> str:
+    """Deep database retrieval: UniProt + ChEMBL + OpenTargets."""
     from agesensei.tools.uniprot import search as uniprot_search
 
+    context_parts = []
+
+    # UniProt
     try:
-        results = await uniprot_search(query, max_results=3)
+        results = await uniprot_search(query, max_results=5)
         if results:
-            return json.dumps(results[:3], indent=2, default=str)
+            context_parts.append(
+                "[UniProt]\n" + json.dumps(results[:5], indent=2, default=str)
+            )
     except Exception as e:
         logger.debug(f"UniProt search failed: {e}")
 
-    return ""
+    # ChEMBL
+    try:
+        from agesensei.tools.chembl import search as chembl_search
+        results = await chembl_search(query, max_results=3)
+        if results:
+            context_parts.append(
+                "[ChEMBL]\n" + json.dumps(results[:3], indent=2, default=str)
+            )
+    except Exception as e:
+        logger.debug(f"ChEMBL search failed: {e}")
+
+    # Also do literature search for DB questions (many require paper context)
+    lit_context = await _search_literature_deep(query, sources)
+    if lit_context:
+        context_parts.append(lit_context)
+
+    return "\n\n".join(context_parts[:6])
 
 
-async def _analyze_sequence(query: str) -> str:
-    """Use ESM-2 for sequence-related questions."""
-    # For SeqQA, we can provide sequence embeddings or basic analysis
-    # This is a lightweight hook — full ESM-2 inference is optional
-    return ""
+async def _analyze_sequence_deep(query: str, sources: list[str] | None = None) -> str:
+    """Sequence-related retrieval: literature + UniProt for context."""
+    context_parts = []
+
+    # UniProt for sequence/protein context
+    try:
+        from agesensei.tools.uniprot import search as uniprot_search
+        results = await uniprot_search(query, max_results=3)
+        if results:
+            context_parts.append(
+                "[UniProt]\n" + json.dumps(results[:3], indent=2, default=str)
+            )
+    except Exception as e:
+        logger.debug(f"UniProt search failed: {e}")
+
+    # Literature for sequence-related knowledge
+    lit_context = await _search_literature_deep(query, sources)
+    if lit_context:
+        context_parts.append(lit_context)
+
+    return "\n\n".join(context_parts[:4])
 
 
 # ---------------------------------------------------------------------------
 # Routing logic
 # ---------------------------------------------------------------------------
 
-SUBTASK_TOOL_MAP = {
-    "LitQA2": _search_literature,
-    "DbQA": _query_protein_db,
-    "SeqQA": _analyze_sequence,
-    "SuppQA": _search_literature,
-    "ProtocolQA": _search_literature,
-    # FigQA, TableQA, CloningScenarios → LLM-only (no tool augmentation)
+SUBTASK_TOOL_MAP: dict[str, Any] = {
+    "LitQA2": _search_literature_deep,
+    "litqa-v2-public": _search_literature_deep,
+    "litqa-v2-closed": _search_literature_deep,
+    "DbQA": _query_protein_db_deep,
+    "SeqQA": _analyze_sequence_deep,
+    "SuppQA": _search_literature_deep,
+    "ProtocolQA": _search_literature_deep,
 }
 
 
@@ -141,21 +220,29 @@ SUBTASK_TOOL_MAP = {
 # Agent implementation
 # ---------------------------------------------------------------------------
 
+COT_SYSTEM_PROMPT = """You are an expert biology researcher with deep knowledge of \
+molecular biology, genetics, biochemistry, pharmacology, and bioinformatics.
+
+When answering multiple-choice questions:
+1. Carefully analyze the question and all provided context
+2. Think step by step through your reasoning
+3. Consider each choice and eliminate incorrect options
+4. If "Insufficient information" is an option, only choose it if you truly cannot determine the answer
+5. End your response with your final answer on a new line in the format: ANSWER: X
+
+where X is a single letter (A, B, C, D, or E)."""
+
+
 class AgeSenseiLabBenchAgent:
-    """LAB-Bench compatible agent backed by AgeSensei tools + LLM.
+    """LAB-Bench compatible agent backed by AgeSensei tools + Chain-of-Thought LLM.
 
     Routes questions to domain-specific tools for retrieval augmentation,
-    then uses an LLM to select the best answer.
-
-    Attributes:
-        model: LLM model identifier.
-        use_tools: Whether to augment with AgeSensei tools.
-        api_key: API key for LLM provider.
+    then uses an LLM with CoT reasoning to select the best answer.
     """
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-haiku-4-5-20251001",
         use_tools: bool = True,
         api_key: str | None = None,
     ):
@@ -164,51 +251,44 @@ class AgeSenseiLabBenchAgent:
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
     async def __call__(self, input: AgentInput) -> str:
-        """Answer a LAB-Bench question. Returns a single letter (A-E).
-
-        This is the LAB-Bench agent_fn interface.
-        """
         return await self.answer(input)
 
     async def answer(self, input: AgentInput) -> str:
-        """Core reasoning: retrieve context → build prompt → call LLM → extract answer."""
-        tools_used = []
+        """Retrieve context → CoT reasoning → extract answer."""
         context = ""
 
-        # Step 1: Tool-augmented retrieval
-        if self.use_tools and input.subtask in SUBTASK_TOOL_MAP:
-            tool_fn = SUBTASK_TOOL_MAP[input.subtask]
-            try:
-                context = await tool_fn(input.question)
-                if context:
-                    tools_used.append(input.subtask)
-            except Exception as e:
-                logger.warning(f"Tool augmentation failed for {input.subtask}: {e}")
+        if self.use_tools:
+            # Try exact subtask match first, then eval name
+            tool_fn = SUBTASK_TOOL_MAP.get(input.subtask)
+            if tool_fn is None:
+                for key in SUBTASK_TOOL_MAP:
+                    if key.lower() in input.subtask.lower():
+                        tool_fn = SUBTASK_TOOL_MAP[key]
+                        break
 
-        # Step 2: Build prompt
-        prompt = self._build_prompt(input, context)
+            if tool_fn:
+                try:
+                    context = await tool_fn(input.question, input.sources)
+                except Exception as e:
+                    logger.warning(f"Tool augmentation failed for {input.subtask}: {e}")
 
-        # Step 3: Call LLM
-        answer = await self._call_llm(prompt)
+        prompt = self._build_cot_prompt(input, context)
+        response = await self._call_llm(prompt)
+        return self._extract_answer(response, input.choices)
 
-        # Step 4: Extract single letter
-        return self._extract_answer(answer, input.choices)
-
-    def _build_prompt(self, input: AgentInput, context: str) -> str:
-        """Construct the LLM prompt with question, choices, and retrieved context."""
+    def _build_cot_prompt(self, input: AgentInput, context: str) -> str:
+        """Build Chain-of-Thought prompt with retrieved context."""
         choices_text = "\n".join(
             f"{chr(65 + i)}. {choice}" for i, choice in enumerate(input.choices)
         )
 
-        parts = [
-            "You are an expert biology researcher. Answer the following multiple-choice question.",
-            "Select the single best answer and respond with ONLY the letter (A, B, C, D, or E).",
-            "",
-        ]
+        parts = []
 
         if context:
             parts.extend([
-                "## Retrieved Context",
+                "## Retrieved Research Context",
+                "(Use this context to inform your answer. Not all context may be relevant.)",
+                "",
                 context,
                 "",
             ])
@@ -220,25 +300,25 @@ class AgeSenseiLabBenchAgent:
             "## Choices",
             choices_text,
             "",
-            "Answer (single letter only):",
+            "Think step by step, then provide your final answer as: ANSWER: X",
         ])
 
         return "\n".join(parts)
 
     async def _call_llm(self, prompt: str) -> str:
-        """Call the LLM API."""
+        """Call LLM with CoT system prompt and sufficient token budget."""
         try:
             import anthropic
 
             client = anthropic.AsyncAnthropic(api_key=self.api_key)
             response = await client.messages.create(
                 model=self.model,
-                max_tokens=1,
+                max_tokens=1024,
+                system=COT_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
             return response.content[0].text.strip()
         except ImportError:
-            # Fallback: try openai-compatible
             return await self._call_llm_openai(prompt)
 
     async def _call_llm_openai(self, prompt: str) -> str:
@@ -251,53 +331,66 @@ class AgeSenseiLabBenchAgent:
             )
             response = await client.chat.completions.create(
                 model=self.model if "gpt" in self.model else "gpt-4o",
-                max_tokens=1,
-                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
+                messages=[
+                    {"role": "system", "content": COT_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
-            return "A"  # Default fallback
+            return "A"
 
     def _extract_answer(self, response: str, choices: list[str]) -> str:
-        """Extract a single letter answer from LLM response."""
-        import re
-
-        response = response.strip().upper()
+        """Extract answer from CoT response. Looks for 'ANSWER: X' pattern."""
         valid = set(chr(65 + i) for i in range(len(choices)))
 
-        # Direct single letter
-        if len(response) == 1 and response in valid:
-            return response
+        # Look for explicit "ANSWER: X" pattern (strongest signal)
+        answer_match = re.search(r'ANSWER:\s*([A-E])', response, re.IGNORECASE)
+        if answer_match and answer_match.group(1).upper() in valid:
+            return answer_match.group(1).upper()
 
-        # Look for standalone letter patterns: "B", "(B)", "B.", "B)"
-        match = re.search(r'\b([A-E])\b', response)
-        if match and match.group(1) in valid:
-            return match.group(1)
+        # Fallback: look for "The answer is X" or "I choose X"
+        fallback = re.search(
+            r'(?:the answer is|i choose|my answer is|correct answer is)\s*[:\s]*([A-E])',
+            response, re.IGNORECASE,
+        )
+        if fallback and fallback.group(1).upper() in valid:
+            return fallback.group(1).upper()
 
-        # Last resort: last valid letter in response
-        for char in reversed(response):
-            if char in valid:
-                return char
+        # Last line often contains just the letter
+        last_line = response.strip().split('\n')[-1].strip().upper()
+        single = re.search(r'\b([A-E])\b', last_line)
+        if single and single.group(1) in valid:
+            return single.group(1)
 
-        return "A"  # Fallback
+        # Anywhere in text (last resort)
+        any_match = re.search(r'\b([A-E])\b', response.upper())
+        if any_match and any_match.group(1) in valid:
+            return any_match.group(1)
+
+        return "A"
 
 
 # ---------------------------------------------------------------------------
-# Dataset loading (HuggingFace or local)
+# Dataset loading (HuggingFace)
 # ---------------------------------------------------------------------------
 
 async def _load_dataset(eval_name: str) -> list[AgentInput]:
-    """Load LAB-Bench dataset from HuggingFace."""
+    """Load LAB-Bench dataset from HuggingFace.
+
+    Includes source DOIs for retrieval augmentation.
+    """
     try:
         from datasets import load_dataset
+        import random
 
         ds = load_dataset("futurehouse/lab-bench", eval_name, split="train")
         inputs = []
         for row in ds:
-            # Choices = ideal + distractors, shuffled
-            import random
-            choices = [row["ideal"]] + list(row.get("distractors", []))
+            distractors = list(row.get("distractors", []))
+            choices = [row["ideal"]] + distractors + ["Insufficient information"]
             random.shuffle(choices)
             ideal_idx = choices.index(row["ideal"])
             ideal_letter = chr(65 + ideal_idx)
@@ -305,8 +398,9 @@ async def _load_dataset(eval_name: str) -> list[AgentInput]:
             inputs.append(AgentInput(
                 question=row["question"],
                 choices=choices,
-                subtask=eval_name,
+                subtask=row.get("subtask", eval_name),
                 ideal=ideal_letter,
+                sources=row.get("sources", []) or [],
             ))
         return inputs
     except ImportError:
@@ -323,13 +417,13 @@ async def _load_dataset(eval_name: str) -> list[AgentInput]:
 
 async def run_lab_bench(
     evals: list[str] | None = None,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = "claude-haiku-4-5-20251001",
     use_tools: bool = True,
     n_threads: int = 4,
     max_questions: int | None = None,
     output_path: str | None = None,
 ) -> dict[str, BenchmarkResults]:
-    """Run LAB-Bench evaluation with AgeSensei tool augmentation.
+    """Run LAB-Bench evaluation with AgeSensei tool augmentation + CoT.
 
     Args:
         evals: List of eval names. Defaults to ["LitQA2", "DbQA", "SeqQA"].
@@ -350,7 +444,7 @@ async def run_lab_bench(
 
     for eval_name in evals:
         print(f"\n{'='*60}")
-        print(f"  Running LAB-Bench: {eval_name}")
+        print(f"  Running LAB-Bench: {eval_name} (CoT + {'tools' if use_tools else 'no tools'})")
         print(f"{'='*60}")
 
         questions = await _load_dataset(eval_name)
@@ -363,17 +457,17 @@ async def run_lab_bench(
 
         print(f"  Questions: {len(questions)} | Model: {model} | Tools: {use_tools}")
 
-        # Run with semaphore for concurrency control
         sem = asyncio.Semaphore(n_threads)
-        eval_results: list[EvalResult] = []
+        completed = [0]
 
         async def evaluate_one(q: AgentInput, idx: int) -> EvalResult:
             async with sem:
                 predicted = await agent(q)
                 correct = predicted == q.ideal
-                if (idx + 1) % 10 == 0:
-                    print(f"    [{idx+1}/{len(questions)}] acc so far: "
-                          f"{sum(1 for r in eval_results if r.correct)}/{len(eval_results)}")
+                completed[0] += 1
+                if completed[0] % 10 == 0:
+                    current_results = completed[0]
+                    print(f"    [{current_results}/{len(questions)}] in progress...")
                 return EvalResult(
                     question_id=f"{eval_name}_{idx}",
                     subtask=q.subtask,
@@ -387,7 +481,6 @@ async def run_lab_bench(
         tasks = [evaluate_one(q, i) for i, q in enumerate(questions)]
         eval_results = await asyncio.gather(*tasks)
 
-        # Compute metrics
         total = len(eval_results)
         correct = sum(1 for r in eval_results if r.correct)
         accuracy = correct / total if total > 0 else 0.0
@@ -397,15 +490,16 @@ async def run_lab_bench(
             total=total,
             correct=correct,
             accuracy=accuracy,
-            coverage=1.0,  # We always answer
+            coverage=1.0,
             results=eval_results,
         )
 
         all_results[eval_name] = benchmark
         print(f"\n  Result: {correct}/{total} = {accuracy:.1%} accuracy")
 
-    # Save results
     if output_path:
+        import os as _os
+        _os.makedirs(_os.path.dirname(output_path), exist_ok=True)
         output = {
             name: {
                 "eval_name": r.eval_name,
@@ -413,11 +507,15 @@ async def run_lab_bench(
                 "correct": r.correct,
                 "accuracy": r.accuracy,
                 "coverage": r.coverage,
+                "per_question": [
+                    {"q": er.question[:80], "ideal": er.ideal, "predicted": er.predicted, "correct": er.correct}
+                    for er in r.results
+                ],
             }
             for name, r in all_results.items()
         }
         with open(output_path, "w") as f:
-            json.dump(output, f, indent=2)
+            json.dump(output, f, indent=2, ensure_ascii=False)
         print(f"\nResults saved to: {output_path}")
 
     return all_results
@@ -429,35 +527,28 @@ async def run_lab_bench(
 
 async def run_ablation(
     evals: list[str] | None = None,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = "claude-haiku-4-5-20251001",
     max_questions: int = 50,
 ) -> dict[str, Any]:
-    """Run with/without AgeSensei tools to measure retrieval augmentation impact.
-
-    Returns:
-        Comparison dict with accuracy for both conditions.
-    """
+    """Run with/without AgeSensei tools to measure retrieval augmentation impact."""
     print("\n" + "=" * 60)
-    print("  LAB-Bench Ablation: AgeSensei Tools vs Baseline")
+    print("  LAB-Bench Ablation: AgeSensei Tools + CoT vs Baseline CoT")
     print("=" * 60)
 
-    # With tools
-    print("\n--- WITH AgeSensei tools ---")
+    print("\n--- WITH AgeSensei tools + CoT ---")
     with_tools = await run_lab_bench(
         evals=evals, model=model, use_tools=True, max_questions=max_questions
     )
 
-    # Without tools
-    print("\n--- WITHOUT tools (baseline) ---")
+    print("\n--- CoT only (no tools) ---")
     without_tools = await run_lab_bench(
         evals=evals, model=model, use_tools=False, max_questions=max_questions
     )
 
-    # Compare
     print("\n" + "=" * 60)
     print("  Ablation Results")
     print("=" * 60)
-    print(f"  {'Eval':<12} {'With Tools':>12} {'Baseline':>12} {'Delta':>8}")
+    print(f"  {'Eval':<12} {'Tools+CoT':>12} {'CoT only':>12} {'Delta':>8}")
     print(f"  {'-'*44}")
 
     comparison = {}

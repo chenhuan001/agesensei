@@ -20,21 +20,29 @@ class TestAgentInput:
         assert len(inp.choices) == 4
         assert inp.subtask == "LitQA2"
 
+    def test_with_sources(self):
+        inp = AgentInput(
+            question="Test?",
+            choices=["A", "B"],
+            sources=["https://doi.org/10.1234/test"],
+        )
+        assert len(inp.sources) == 1
+
 
 class TestAgeSenseiLabBenchAgent:
-    def test_prompt_building(self):
+    def test_cot_prompt_building(self):
         agent = AgeSenseiLabBenchAgent(model="test", use_tools=False)
         inp = AgentInput(
             question="Which protein is a senolytic target?",
             choices=["BCL-xL", "Insulin", "Hemoglobin", "Collagen"],
             subtask="LitQA2",
         )
-        prompt = agent._build_prompt(inp, "")
+        prompt = agent._build_cot_prompt(inp, "")
         assert "BCL-xL" in prompt
         assert "A." in prompt
-        assert "single letter" in prompt.lower() or "single best" in prompt.lower()
+        assert "ANSWER: X" in prompt
 
-    def test_prompt_with_context(self):
+    def test_cot_prompt_with_context(self):
         agent = AgeSenseiLabBenchAgent(model="test", use_tools=True)
         inp = AgentInput(
             question="Test question?",
@@ -42,22 +50,36 @@ class TestAgeSenseiLabBenchAgent:
             subtask="LitQA2",
         )
         context = "BCL-xL is a key anti-apoptotic protein."
-        prompt = agent._build_prompt(inp, context)
-        assert "Retrieved Context" in prompt
+        prompt = agent._build_cot_prompt(inp, context)
+        assert "Retrieved Research Context" in prompt
         assert "BCL-xL" in prompt
+
+    def test_extract_answer_explicit_format(self):
+        agent = AgeSenseiLabBenchAgent(model="test")
+        response = """Let me think through this step by step.
+        The protein BCL-xL is known for its anti-apoptotic role.
+        Based on the evidence, the best answer is BCL-xL.
+        ANSWER: A"""
+        assert agent._extract_answer(response, ["a", "b", "c", "d"]) == "A"
+
+    def test_extract_answer_with_reasoning(self):
+        agent = AgeSenseiLabBenchAgent(model="test")
+        response = "After careful analysis, the answer is B because..."
+        assert agent._extract_answer(response, ["a", "b", "c"]) == "B"
 
     def test_extract_answer_single_letter(self):
         agent = AgeSenseiLabBenchAgent(model="test")
         assert agent._extract_answer("B", ["a", "b", "c", "d"]) == "B"
         assert agent._extract_answer("c", ["a", "b", "c", "d"]) == "C"
 
-    def test_extract_answer_with_text(self):
-        agent = AgeSenseiLabBenchAgent(model="test")
-        assert agent._extract_answer("The answer is B", ["a", "b", "c"]) == "B"
-
     def test_extract_answer_fallback(self):
         agent = AgeSenseiLabBenchAgent(model="test")
         assert agent._extract_answer("???", ["a", "b", "c"]) == "A"
+
+    def test_extract_answer_last_line(self):
+        agent = AgeSenseiLabBenchAgent(model="test")
+        response = "Some reasoning here.\nMore analysis.\nC"
+        assert agent._extract_answer(response, ["a", "b", "c"]) == "C"
 
 
 class TestBenchmarkResults:
