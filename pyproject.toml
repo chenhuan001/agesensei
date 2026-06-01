@@ -54,8 +54,12 @@ distributed = [
     "fair-esm>=2.0",
     "datasets>=2.14",
 ]
+eval = [
+    "datasets>=2.14",
+    "anthropic>=0.40",
+]
 all = [
-    "agesensei[esm,structure,cadd,distributed]",
+    "agesensei[esm,structure,cadd,distributed,eval]",
 ]
 dev = [
     "pytest>=7.0",

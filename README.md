@@ -202,6 +202,8 @@ src/
 │   │           ├── dataset.py       # AgingMutationDataset
 │   │           ├── trainer.py       # ESMFineTuner (DDP/DeepSpeed)
 │   │           └── prepare_data.py  # GenAge data preparation
+│   ├── eval/            # Benchmark evaluation
+│   │   └── lab_bench_adapter.py  # LAB-Bench adapter
 │   ├── config.py         # Configuration management
 │   ├── schema.py         # Pydantic data models
 │   └── cli.py            # Typer CLI entry point
@@ -210,6 +212,56 @@ src/
 │   ├── registry.py       # Backend plugin registry
 │   └── types.py          # Shared types
 └── tests/
+```
+
+## Evaluation (LAB-Bench)
+
+AgeSensei includes a [LAB-Bench](https://github.com/Future-House/LAB-Bench) adapter for evaluating agent performance on biology research tasks. The adapter routes questions to domain-specific AgeSensei tools (PubMed/UniProt retrieval, ESM-2 analysis) and measures the impact of tool augmentation vs baseline LLM.
+
+### Supported Eval Categories
+
+| Category | Questions | AgeSensei Tool Augmentation |
+|----------|-----------|----------------------------|
+| LitQA2 | 199 | LiteratureAgent (PubMed + Semantic Scholar) |
+| DbQA | ~200 | UniProt / ChEMBL database retrieval |
+| SeqQA | ~200 | ESM-2 protein analysis |
+| SuppQA | ~200 | Literature retrieval |
+| ProtocolQA | ~200 | Literature retrieval |
+| FigQA | ~200 | LLM-only (visual reasoning) |
+| TableQA | ~200 | LLM-only (table reasoning) |
+
+### Running Evaluations
+
+```bash
+# Install eval dependencies
+pip install -e ".[eval]"
+
+# Quick test (10 questions per eval)
+agesensei eval-lab-bench --max-questions 10
+
+# Full evaluation on LitQA2
+agesensei eval-lab-bench --evals LitQA2 --model claude-sonnet-4-20250514
+
+# Ablation study: with vs without AgeSensei tools
+agesensei eval-lab-bench --ablation --max-questions 50
+
+# Baseline (no tool augmentation)
+agesensei eval-lab-bench --no-tools --evals LitQA2 DbQA SeqQA
+```
+
+### Python API
+
+```python
+from agesensei.eval import run_lab_bench
+
+results = await run_lab_bench(
+    evals=["LitQA2", "DbQA", "SeqQA"],
+    model="claude-sonnet-4-20250514",
+    use_tools=True,
+    n_threads=4,
+)
+for name, r in results.items():
+    print(f"{name}: {r.accuracy:.1%} ({r.correct}/{r.total})")
 ```
 
 ## Configuration
@@ -233,11 +285,12 @@ ESM_FINETUNED_PATH=artifacts/finetune/best
 
 ## Roadmap
 
+- [x] LAB-Bench evaluation adapter (LitQA2, DbQA, SeqQA + tool augmentation ablation)
+- [ ] BixBench agentic evaluation (computational biology data analysis capsules)
 - [ ] MCP (Model Context Protocol) server for bioinformatics tool integration
 - [ ] Streamlit interactive dashboard
 - [ ] ADMET prediction agent
 - [ ] Clinical trial design optimization
-- [ ] LangGraph state machine for complex multi-step workflows
 - [ ] Integration with DMS (Deep Mutational Scanning) datasets for fine-tuning
 - [ ] Active learning loop: pipeline discovers targets → fine-tune → better predictions
 

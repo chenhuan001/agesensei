@@ -1,6 +1,8 @@
 """AgeSensei CLI entry point."""
 
 import asyncio
+from pathlib import Path
+
 import typer
 from rich.console import Console
 
@@ -120,6 +122,35 @@ def finetune(
     )
     trainer.train(data, val_data)
     console.print(f"[bold green]Done![/] Fine-tuned model saved to {output}/best/")
+
+
+@app.command()
+def eval_lab_bench(
+    evals: list[str] = typer.Option(["LitQA2", "DbQA", "SeqQA"], help="Eval categories"),
+    model: str = typer.Option("claude-sonnet-4-20250514", help="LLM model"),
+    max_questions: int = typer.Option(None, help="Limit questions per eval"),
+    n_threads: int = typer.Option(4, help="Concurrent threads"),
+    no_tools: bool = typer.Option(False, help="Disable AgeSensei tool augmentation"),
+    ablation: bool = typer.Option(False, help="Run with/without tools comparison"),
+    output: str = typer.Option("artifacts/eval/lab_bench_results.json", help="Output path"),
+):
+    """Run LAB-Bench evaluation with AgeSensei tool augmentation.
+
+    Evaluates on biology research tasks (LitQA2, DbQA, SeqQA, etc.)
+    and measures the impact of AgeSensei retrieval tools vs baseline LLM.
+    """
+    from agesensei.eval.lab_bench_adapter import run_ablation, run_lab_bench
+
+    console.print(f"[bold green]AgeSensei[/] — LAB-Bench Evaluation")
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+
+    if ablation:
+        asyncio.run(run_ablation(evals=evals, model=model, max_questions=max_questions or 50))
+    else:
+        asyncio.run(run_lab_bench(
+            evals=evals, model=model, use_tools=not no_tools,
+            n_threads=n_threads, max_questions=max_questions, output_path=output,
+        ))
 
 
 @app.command()
