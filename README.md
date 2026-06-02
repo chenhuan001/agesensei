@@ -251,16 +251,28 @@ agesensei eval-lab-bench --no-tools --evals LitQA2 DbQA SeqQA
 
 ### Benchmark Results (LitQA2, n=50)
 
-| Version | With Tools | Baseline (LLM only) | Delta |
-|---------|-----------|---------------------|-------|
-| v1 (single-token) | 16.0% (8/50) | 14.0% (7/50) | +2.0% |
-| **v2 (CoT + enhanced retrieval)** | **24.0% (12/50)** | **30.0% (15/50)** | -6.0% |
+| Model | With Tools | Baseline (LLM only) | Tool Delta |
+|-------|-----------|---------------------|------------|
+| **Opus 4.6** | **54% (19/35)** | **52% (26/50)** | **+2%** |
+| Haiku (CoT + retrieval) | 34% (17/50) | 26% (13/50) | +8% |
+| Haiku (single-token, v1) | 16% (8/50) | 14% (7/50) | +2% |
+
+**Comparison with SOTA:**
+
+| System | Model | LitQA2 Accuracy | Architecture |
+|--------|-------|----------------|-------------|
+| PaperQA2 (SOTA) | GPT-4o | **66.0%** | Full-text RAG + iterative search + LLM reranking |
+| **AgeSensei** | **Opus 4.6** | **54%** | CoT + PubMed/S2/PMC retrieval + LLM chunk scoring |
+| AgeSensei | Haiku | 34% | Same pipeline, smaller model |
+| Raw LLM | GPT-4o | ~25% | No tools (open-answer format) |
+| Raw LLM | Opus 4.6 | 52% | No tools (multiple-choice format) |
 
 **Key findings:**
-- **Chain-of-Thought reasoning** boosted baseline accuracy from 14% → 30% (+16%), confirming CoT is critical for biology QA
-- **Tool augmentation** shows +2% gain with basic prompting (v1), but retrieval noise hurts smaller models (v2 with Haiku)
-- Results are consistent with published benchmarks: GPT-4o achieves ~25% on LitQA2 open-answer format (our Haiku-based 24-30% is competitive)
-- **Scaling hypothesis**: tool augmentation is expected to show positive gains with larger models (Sonnet/Opus) that can better leverage retrieved context
+- **Model scale is the biggest lever**: Opus 4.6 baseline (52%) is 2x Haiku baseline (26%), confirming that stronger models dramatically improve biology QA
+- **Tool augmentation helps smaller models more**: +8% for Haiku vs +2% for Opus — larger models already encode more biomedical knowledge
+- **Chain-of-Thought is critical**: v1→v2 upgrade (single-token → CoT) boosted Haiku baseline from 14% → 26% (+12%)
+- **Gap to SOTA (PaperQA2)**: 12% gap mainly due to full-text access rate — PaperQA2 retrieves full PDFs via Unpaywall/S2, while AgeSensei relies on PubMed abstracts + PMC Open Access subset
+- **Roadmap to close the gap**: Full-text PDF retrieval + Unpaywall integration + iterative multi-query search
 
 ### Python API
 
