@@ -43,16 +43,22 @@ class TestAgeSenseiLabBenchAgent:
         assert "ANSWER: X" in prompt
 
     def test_cot_prompt_with_context(self):
+        from agesensei.eval.lab_bench_adapter import RetrievedChunk
         agent = AgeSenseiLabBenchAgent(model="test", use_tools=True)
         inp = AgentInput(
             question="Test question?",
             choices=["A", "B", "C"],
             subtask="LitQA2",
         )
-        context = "BCL-xL is a key anti-apoptotic protein."
-        prompt = agent._build_cot_prompt(inp, context)
-        assert "Retrieved Research Context" in prompt
+        chunks = [RetrievedChunk(
+            text="BCL-xL is a key anti-apoptotic protein.",
+            source="PubMed:12345",
+            relevance_score=8.0,
+        )]
+        prompt = agent._build_cot_prompt(inp, chunks)
+        assert "Retrieved Research Evidence" in prompt
         assert "BCL-xL" in prompt
+        assert "relevance: 8/10" in prompt
 
     def test_extract_answer_explicit_format(self):
         agent = AgeSenseiLabBenchAgent(model="test")
