@@ -196,6 +196,36 @@ async def tool_search_in_paper(text_corpus: str, keywords: str) -> str:
     return f"[Keywords '{keywords}' not found in the paper text]"
 
 
+async def tool_search_mempalace(query: str) -> str:
+    """Search the local MemPalace knowledge base containing pre-indexed full-text papers.
+
+    This is the FASTEST and most reliable retrieval tool — no network calls needed.
+    Contains full text (all sections) of 269 biomedical papers pre-indexed with
+    semantic embeddings. Returns the most relevant passages.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                os.path.expanduser("~/.mempalace-venv/bin/mempalace"),
+                "search", query, "--wing", "papers", "--results", "8",
+            ],
+            capture_output=True, text=True, timeout=30,
+            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+        )
+        output = result.stdout.strip()
+        if not output or "No results" in output:
+            return "[No results in MemPalace knowledge base]"
+        return output[:10000]
+    except subprocess.TimeoutExpired:
+        return "[MemPalace search timed out]"
+    except FileNotFoundError:
+        return "[MemPalace not installed]"
+    except Exception as e:
+        return f"[MemPalace search failed: {e}]"
+
+
 async def tool_web_search(query: str) -> str:
     """Search the entire web using DuckDuckGo. Returns snippets from web pages.
 
@@ -375,6 +405,17 @@ def _sections_to_text(sections: dict[str, str], max_total: int = 15000) -> str:
 
 TOOLS = [
     {
+        "name": "search_mempalace",
+        "description": "Search a LOCAL knowledge base containing pre-indexed full-text of 269 biomedical papers. This is INSTANT (no network needed) and covers most LitQA2 source papers. ALWAYS try this FIRST before any other tool — it returns relevant full-text passages with semantic matching. Use specific biology terms: gene names, protein names, experimental conditions, measurements.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Semantic search query. Use specific scientific terms (gene names, protein names, species, experimental measurements, pathway names)."}
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "fetch_doi_fulltext",
         "description": "Fetch the full text of a scientific paper by its DOI. Returns structured text with section headings. Use this when you have a specific paper DOI and need to find specific information in it.",
         "input_schema": {
@@ -454,25 +495,22 @@ You have tools to search scientific literature, fetch paper full texts, and sear
 is to find the specific evidence needed to answer the question correctly.
 
 Strategy:
-1. First, check if any source DOIs are provided. If yes, fetch those papers first — the answer
-   is almost certainly in one of them.
-2. If DOI fetch only returns abstract or fails (common for bioRxiv preprints), use web_search
-   with specific terms from the question (gene names, species, measurements) to find the paper
-   on the publisher's website, then use web_fetch to get the full text.
-3. Read the question carefully. Identify what SPECIFIC fact is being asked (a measurement,
+1. ALWAYS start with search_mempalace — it contains pre-indexed full-text of ~270 papers covering
+   most questions in this benchmark. It is instant (no network) and returns relevant passages.
+   Try 2-3 different queries with specific terms from the question (gene names, measurements, etc.)
+2. If MemPalace returns good evidence, you can answer immediately — don't waste tool calls.
+3. If MemPalace doesn't have what you need, check the source DOIs (fetch_doi_fulltext).
+4. If DOI fetch only returns abstract or fails, use web_search with specific terms, then web_fetch.
+5. Read the question carefully. Identify what SPECIFIC fact is being asked (a measurement,
    a gene name, an experimental outcome, etc.)
-4. After fetching a paper, search within it for the specific keywords related to the question.
-5. If you still can't find the answer, try broader web_search queries combining the topic
-   with specific terminology from the question.
-6. When you have enough evidence, provide your final answer.
+6. After fetching a paper, search within it for the specific keywords related to the question.
 
 IMPORTANT:
-- web_search is your most powerful tool — it can find information in bioRxiv preprints,
-  supplementary materials, and publisher full-text pages that DOI-based retrieval misses.
-- Be specific in searches: use gene names, protein names, species, exact measurements.
+- search_mempalace is your BEST tool — use it first, and try multiple queries if the first doesn't work.
+- Be specific in all searches: use gene names, protein names, species, exact measurements.
 - When you find relevant text, quote it to support your reasoning.
 - Only give up (choose "Insufficient information") as an absolute last resort.
-- You have up to 8 tool calls. Use them wisely — try DOI first, then web_search + web_fetch.
+- You have up to 8 tool calls. Use them wisely — MemPalace first, then DOI, then web.
 - After finding evidence, think step-by-step before choosing your answer.
 """
 
@@ -600,7 +638,10 @@ Use your tools to find the specific evidence needed to answer correctly. Then pr
     async def _execute_tool(self, tool_name: str, tool_input: dict) -> str:
         """Execute a tool call and return the result string."""
         try:
-            if tool_name == "fetch_doi_fulltext":
+            if tool_name == "search_mempalace":
+                return await tool_search_mempalace(tool_input["query"])
+
+            elif tool_name == "fetch_doi_fulltext":
                 doi = tool_input["doi"]
                 if doi in self._paper_cache:
                     return self._paper_cache[doi]

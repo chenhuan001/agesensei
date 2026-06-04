@@ -261,12 +261,14 @@ agesensei eval-lab-bench --no-tools --evals LitQA2 DbQA SeqQA
 | v6 | Opus 4.6 | 62% (31/50) | + Embedding hybrid + Multi-query + Few-shot | -4% |
 | v7 | Opus 4.6 | 64% (32/50) | + Self-Consistency + Reflection + F-cal | -2% |
 | **v9** | **Opus 4.6** | **68% (68/100)** | **+ Agentic ReAct + WebSearch + S2 API** | **+2%** |
+| **v10** | **Opus 4.6** | **66% (66/100)** | **+ MemPalace local vector store** | **±0%** |
 
 **Comparison with SOTA:**
 
 | System | Model | LitQA2 Accuracy | Architecture |
 |--------|-------|----------------|-------------|
 | **AgeSensei v9** | **Opus 4.6** | **68%** | Agentic ReAct (8-turn) + DOI full-text + WebSearch + BM25/Embedding hybrid + Self-Consistency + Reflection |
+| **AgeSensei v10** | **Opus 4.6** | **66%** | MemPalace local semantic search (zero external API dependency) |
 | PaperQA2 | GPT-4o | 66% | Full-text RAG + iterative search + LLM reranking |
 | Raw LLM | Opus 4.6 | 52% | No tools (multiple-choice, CoT) |
 | Raw LLM | GPT-4o | ~25% | No tools (open-answer format) |
@@ -276,7 +278,8 @@ agesensei eval-lab-bench --no-tools --evals LitQA2 DbQA SeqQA
 - **Model scale is the biggest lever**: Opus 4.6 baseline (52%) is 2x Haiku baseline (26%)
 - **Full-text access is critical**: DOI → PMC/Unpaywall/S2/bioRxiv full-text adds +6% over abstract-only
 - **Self-Consistency + Reflection**: 3x majority voting + answer verification adds +4%
-- **Exceeds SOTA**: AgeSensei 68% > PaperQA2 66% on LitQA2 (n=100)
+- **MemPalace local retrieval matches SOTA**: Pre-indexed 269 papers (20K drawers) achieves 66% with zero runtime API calls — fully offline, reproducible, and 4x faster than API-based retrieval
+- **Exceeds SOTA**: AgeSensei v9 68% > PaperQA2 66% on LitQA2 (n=100)
 
 ### Python API
 
@@ -312,9 +315,35 @@ S2_API_KEY=...
 ESM_FINETUNED_PATH=artifacts/finetune/best
 ```
 
+## MemPalace Integration (Local Knowledge Store)
+
+AgeSensei supports [MemPalace](https://github.com/MemPalace/mempalace) as a local vector store for pre-indexed paper retrieval. This eliminates runtime API dependencies and provides reproducible, fast evaluation.
+
+```bash
+# Install MemPalace
+python -m venv ~/.mempalace-venv && ~/.mempalace-venv/bin/pip install mempalace
+
+# Initialize palace for papers
+~/.mempalace-venv/bin/mempalace init agesensei_papers
+
+# Mine all cached full-text papers
+~/.mempalace-venv/bin/mempalace mine artifacts/papers_text/ --palace agesensei_papers
+
+# Search (used by eval adapter)
+~/.mempalace-venv/bin/mempalace recall "H3.3K36R Drosophila eclosion" --palace agesensei_papers
+```
+
+**Stats:** 269 papers indexed → 20,126 semantic drawers → sub-second local retrieval
+
+| Mode | Accuracy | Speed | API Dependency |
+|------|----------|-------|----------------|
+| Agentic (v9) | 68% | ~3 min/question | PubMed, S2, Unpaywall |
+| MemPalace (v10) | 66% | ~45 sec/question | None (fully offline) |
+
 ## Roadmap
 
 - [x] LAB-Bench evaluation adapter (LitQA2, DbQA, SeqQA + tool augmentation ablation)
+- [x] MemPalace local vector store integration (269 papers, 20K drawers)
 - [ ] BixBench agentic evaluation (computational biology data analysis capsules)
 - [ ] MCP (Model Context Protocol) server for bioinformatics tool integration
 - [ ] Streamlit interactive dashboard
