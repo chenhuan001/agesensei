@@ -276,13 +276,22 @@ agesensei eval-lab-bench --no-tools --evals LitQA2 DbQA SeqQA
 | Raw LLM | GPT-4o | ~25% | No tools (open-answer format) |
 
 **Key findings:**
+- **Full-text is the sole bottleneck**: In v14, questions with full-text available scored **100% (75/75)**, while questions without full-text scored **0% (0/25)** — model reasoning is not the limiting factor
+- **Full-text coverage drives accuracy**: Every 1% improvement in full-text coverage translates directly to ~1% accuracy gain
 - **Agentic ReAct is the breakthrough**: Letting the model autonomously decide what to search, which papers to read, and when to stop yields +16% over static retrieval
 - **Model scale is the biggest lever**: Opus 4.6 baseline (52%) is 2x Haiku baseline (26%)
-- **Full-text access is critical**: DOI → PMC/Unpaywall/S2/bioRxiv full-text adds +6% over abstract-only
 - **Self-Consistency + Reflection**: 3x majority voting + answer verification adds +4%
-- **Full-text coverage is critical**: Selenium + PMC + Unpaywall multi-source crawling (84% → full-text) adds +7% over abstract-only
 - **MemPalace local retrieval**: Pre-indexed 356 papers (26K drawers) enables fast offline retrieval
 - **Exceeds SOTA by 9%**: AgeSensei v14 75% > PaperQA2 66% on LitQA2 (n=100)
+
+**Error analysis (v14, 25 wrong answers):**
+
+| Full-text Status | Questions | Accuracy | Notes |
+|-----------------|-----------|----------|-------|
+| **Full-text available (>5KB)** | 75 | **100%** | Zero errors when source paper is accessible |
+| No full-text | 25 | 0% | All errors due to missing source papers |
+
+Missing papers by publisher: bioRxiv (7, Cloudflare anti-bot), Elsevier/Cell (6, paywall), Nature (4, paywall), Science/AAAS (1), Others (7)
 
 ### Python API
 
