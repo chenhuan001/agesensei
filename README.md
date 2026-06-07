@@ -7,34 +7,32 @@ AgeSensei is an AI-powered research pipeline that orchestrates multiple speciali
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Orchestrator Agent                        │
-│         (coordinates pipeline, manages state)                │
-└──────┬──────┬──────┬──────┬──────┬──────┬──────┬────────────┘
-       │      │      │      │      │      │      │
-       ▼      ▼      ▼      ▼      ▼      ▼      ▼
-┌────────┐┌────────┐┌────────┐┌────────┐┌────────┐┌────────┐┌────────┐
-│Literatu││Target  ││Protein ││Structur││Druggab-││Pathway ││Baseline│
-│re Agent││Extract ││Analyzer││e Pred  ││ility   ││Agent   ││Table   │
-│        ││        ││(ESM-2) ││(Proteni││        ││(KEGG)  ││Agent   │
-│PubMed  ││LLM     ││650M    ││x 464M) ││ChEMBL  ││        ││        │
-│arXiv   ││extract ││DDP/DS  ││AF3-clas││OpenTgt ││        ││        │
-│S2      ││        ││        ││s       ││        ││        ││        │
-└────────┘└────────┘└────────┘└────────┘└────────┘└────────┘└────────┘
-       │                         │                    │
-       ▼                         ▼                    ▼
-┌─────────────────┐    ┌─────────────────────────┐  ┌──────────────────┐
-│ CADD Pipeline   │    │ ESM-2 Fine-tuning       │  │ Affinity Ensemble│
-│ AutoDock Vina   │    │ Domain-adaptive MLM     │  │ Vina / DiffDock  │
-│ Affinity Ensemb │    │ Mutation classification │  │ Uni-Dock / Boltz │
-│ (multi-backend) │    │ DDP / DeepSpeed         │  │ (multi-backend)  │
-└─────────────────┘    └─────────────────────────┘  └──────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          Orchestrator Agent                              │
+│               (coordinates 8-step pipeline, manages state)               │
+└───┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬─────────────────────┘
+    │      │      │      │      │      │      │      │
+    ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼
+┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐
+│Litera││Target││Protei││Struct││ CADD ││Drugga││Pathwa││Baseli│
+│ture  ││Extra-││n Ana-││Predi-││Agent ││bility││y     ││ne    │
+│Agent ││ctor  ││lyzer ││ct    ││      ││Agent ││Agent ││Table │
+│      ││      ││(ESM2)││Agent ││ChEMBL││      ││(KEGG)││Agent │
+│PubMed││LLM   ││650M  ││Prote-││Vina  ││Open- ││      ││      │
+│arXiv ││NER   ││DDP/DS││nix   ││QSAR  ││Tgt   ││      ││      │
+│S2    ││      ││      ││464M  ││RDKit ││      ││      ││      │
+└──────┘└──────┘└──────┘└──┬───┘└──┬───┘└──────┘└──────┘└──────┘
+                           │       │
+                     structure → docking
+                    (CIF/PDB)   (receptor)
+
+Pipeline: Literature → Targets → Protein → Structure → CADD → Druggability → Pathway → Report
 ```
 
 ## Key Features
 
 ### Multi-Agent Pipeline
-- **8 specialized agents** coordinated by an LLM-powered orchestrator
+- **9 specialized agents** coordinated by an LLM-powered orchestrator (literature → target extraction → protein analysis → **structure prediction** → **CADD virtual screening** → druggability → pathway → baseline table → report)
 - **DeepXiv-style deep reading**: progressive section-level paper analysis
 - **ReAct search**: multi-iteration literature discovery with self-reflection
 - **Automated target scoring**: composite score from literature evidence, druggability, aging DB validation

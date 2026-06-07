@@ -8,7 +8,8 @@ __all__ = [
     "LiteratureAgent",
     "TargetExtractor",
     "ProteinAnalyzer",
-    "StructurePredictor",
+    "StructurePredictAgent",
+    "CADDAgent",
     "DruggabilityAgent",
     "PathwayAgent",
     "BaselineTableAgent",
@@ -26,9 +27,12 @@ def __getattr__(name: str):
     if name == "ProteinAnalyzer":
         from agesensei.agents.protein_analyzer import ProteinAnalyzer
         return ProteinAnalyzer
-    if name == "StructurePredictor":
-        from agesensei.agents.structure_predictor import StructurePredictor
-        return StructurePredictor
+    if name in ("StructurePredictAgent", "StructurePredictor"):
+        from agesensei.agents.structure_predictor import StructurePredictAgent
+        return StructurePredictAgent
+    if name == "CADDAgent":
+        from agesensei.agents.cadd import CADDAgent
+        return CADDAgent
     if name == "DruggabilityAgent":
         from agesensei.agents.druggability import DruggabilityAgent
         return DruggabilityAgent

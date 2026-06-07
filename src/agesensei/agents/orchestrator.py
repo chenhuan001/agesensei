@@ -12,7 +12,8 @@ from agesensei.schema import DiscoveryReport
 from agesensei.agents.literature import LiteratureAgent
 from agesensei.agents.target_extractor import TargetExtractor
 from agesensei.agents.protein_analyzer import ProteinAnalyzer
-from agesensei.agents.structure_predictor import StructurePredictor
+from agesensei.agents.structure_predictor import StructurePredictAgent
+from agesensei.agents.cadd import CADDAgent
 from agesensei.agents.druggability import DruggabilityAgent
 from agesensei.agents.pathway import PathwayAgent
 from agesensei.agents.baseline_table import BaselineTableAgent
@@ -21,13 +22,15 @@ from agesensei.agents.baseline_table import BaselineTableAgent
 class Orchestrator:
     """Top-level coordinator for the AgeSensei discovery pipeline.
 
-    Workflow:
-        1. LiteratureAgent -> search papers
-        2. TargetExtractor -> extract gene targets from papers
-        3. ProteinAnalyzer -> ESM-2 analysis of top targets
-        4. DruggabilityAgent -> assess druggability via ChEMBL + OpenTargets
-        5. PathwayAgent -> KEGG aging pathway enrichment
-        6. Generate markdown report
+    Workflow (8 steps):
+        1. LiteratureAgent        -> search papers
+        2. TargetExtractor        -> extract gene targets from papers
+        3. ProteinAnalyzer        -> ESM-2 analysis of top targets
+        4. StructurePredictAgent  -> Protenix 3D structure prediction
+        5. CADDAgent              -> virtual screening (docking + QSAR)
+        6. DruggabilityAgent      -> assess druggability via ChEMBL + OpenTargets
+        7. PathwayAgent           -> KEGG aging pathway enrichment
+        8. Generate report
 
     Example:
         orch = Orchestrator()
@@ -35,20 +38,31 @@ class Orchestrator:
         orch.save_report(report, "output/")
     """
 
-    def __init__(self, skip_esm: bool = False, predict_structures: bool = False):
+    def __init__(
+        self,
+        skip_esm: bool = False,
+        predict_structures: bool = True,
+        run_cadd: bool = True,
+    ):
         """
         Args:
-            skip_esm: If True, skip ESM-2 protein analysis (faster)
-            predict_structures: If True, run Protenix structure prediction (requires GPU)
+            skip_esm: If True, skip ESM-2 protein analysis (faster).
+            predict_structures: If True, run Protenix structure prediction.
+            run_cadd: If True, run CADD virtual screening after structure
+                      prediction. Requires predict_structures=True for
+                      structure-based docking; ligand-only filtering still
+                      works without structures.
         """
         self.literature = LiteratureAgent()
         self.extractor = TargetExtractor()
         self.protein = ProteinAnalyzer(skip_esm=skip_esm)
-        self.structure_predictor = StructurePredictor()
+        self.structure_predictor = StructurePredictAgent()
+        self.cadd = CADDAgent()
         self.druggability = DruggabilityAgent()
         self.pathway = PathwayAgent()
         self.baseline = BaselineTableAgent(literature=self.literature)
         self._predict_structures = predict_structures
+        self._run_cadd = run_cadd
 
     async def discover(
         self,
@@ -81,10 +95,15 @@ class Orchestrator:
                              is enabled.
         """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        n_steps = 8
         mode_bits = []
         mode_bits.append("deep-search (ReAct)" if deep_search else "standard search")
         if deep_read:
             mode_bits.append(f"deep-read top-{deep_read_top_k}")
+        if self._predict_structures:
+            mode_bits.append("structure prediction")
+        if self._run_cadd:
+            mode_bits.append("CADD screening")
         if baseline_table:
             mode_bits.append("baseline tables")
         print(f"\n{'='*60}")
@@ -95,7 +114,7 @@ class Orchestrator:
         print(f"{'='*60}")
 
         # Step 1: Literature search
-        print(f"\n[1/5] Literature search (max {max_papers} papers)...")
+        print(f"\n[1/{n_steps}] Literature search (max {max_papers} papers)...")
         if deep_search:
             papers = await self.literature.search_react(
                 query, max_iterations=3, min_quality=max(10, max_papers // 2),
@@ -110,7 +129,7 @@ class Orchestrator:
         findings = []
         if deep_read and papers:
             k = min(deep_read_top_k, len(papers))
-            print(f"\n[1b/5] Deep-reading top {k} papers (section-level)...")
+            print(f"\n[1b/{n_steps}] Deep-reading top {k} papers (section-level)...")
             try:
                 findings = await self.literature.deep_read(
                     query, papers=papers, top_k=k
@@ -120,41 +139,69 @@ class Orchestrator:
                 print(f"      deep_read failed, continuing without findings ({e})")
 
         # Step 2: Target extraction
-        print(f"\n[2/5] Target extraction...")
+        print(f"\n[2/{n_steps}] Target extraction...")
         targets = self.extractor.extract_from_papers(papers)
         top = targets[:top_targets]
         print(f"      Extracted {len(targets)} targets, analyzing top {len(top)}")
 
-        # Step 3: Protein analysis
-        print(f"\n[3/6] Protein analysis...")
+        # Step 3: Protein analysis (ESM-2)
+        print(f"\n[3/{n_steps}] Protein analysis (ESM-2)...")
         protein_analyses = await self.protein.analyze_targets(top, top_n=top_targets, scan_positions=scan_positions)
 
-        # Step 3b: Structure prediction (optional, requires Protenix + GPU)
+        # Step 4: Structure prediction (Protenix)
         structure_predictions = {}
         if self._predict_structures:
-            print(f"\n[3b/6] Structure prediction (Protenix)...")
+            print(f"\n[4/{n_steps}] Structure prediction (Protenix)...")
             if self.structure_predictor.available:
                 structure_predictions = await self.structure_predictor.predict_targets(top, top_n=top_targets)
             else:
                 print("      Protenix not installed, skipping. Install: pip install protenix")
+        else:
+            print(f"\n[4/{n_steps}] Structure prediction — skipped (disabled)")
 
-        # Step 4: Druggability assessment
-        print(f"\n[4/6] Druggability assessment...")
+        # Step 5: CADD virtual screening
+        cadd_results = {}
+        if self._run_cadd:
+            print(f"\n[5/{n_steps}] CADD virtual screening...")
+            if self.cadd.available:
+                cadd_results = await self.cadd.screen_targets(
+                    top,
+                    structures=structure_predictions if structure_predictions else None,
+                    top_n=top_targets,
+                )
+            else:
+                print("      CADD deps not installed, skipping. Install: pip install agesensei[cadd]")
+        else:
+            print(f"\n[5/{n_steps}] CADD virtual screening — skipped (disabled)")
+
+        # Step 6: Druggability assessment
+        print(f"\n[6/{n_steps}] Druggability assessment...")
         druggability = await self.druggability.assess_targets(top, top_n=top_targets)
 
-        # Step 5: Pathway analysis
-        print(f"\n[5/6] Pathway analysis...")
+        # Step 7: Pathway analysis
+        print(f"\n[7/{n_steps}] Pathway analysis...")
         pathways = await self.pathway.analyze(top, top_n=top_targets)
 
-        # Compute overall scores
+        # Compute overall scores (now includes CADD signal)
         for target in top:
             drug_score = druggability.get(target.gene_symbol)
             target.druggability_score = drug_score.score if drug_score else 0.0
+
+            # CADD bonus: targets with potent docking hits score higher
+            cadd_bonus = 0.0
+            cadd_res = cadd_results.get(target.gene_symbol)
+            if cadd_res and cadd_res.top_hits:
+                best_pchembl = max(
+                    (h.pchembl_value or 0.0 for h in cadd_res.top_hits), default=0.0
+                )
+                cadd_bonus = min(best_pchembl / 10.0, 1.0)  # normalize to 0-1
+
             target.overall_score = (
-                0.4 * target.score +           # literature/HAGR evidence
-                0.3 * target.druggability_score +  # druggability
-                0.2 * (0.5 if target.in_genage else 0.0) +  # aging DB validation
-                0.1 * (1.0 if target.aging_link else 0.0)    # aging link
+                0.35 * target.score +              # literature/HAGR evidence
+                0.25 * target.druggability_score +  # druggability
+                0.15 * cadd_bonus +                 # CADD screening signal
+                0.15 * (0.5 if target.in_genage else 0.0) +  # aging DB validation
+                0.10 * (1.0 if target.aging_link else 0.0)    # aging link
             )
 
         top.sort(key=lambda t: t.overall_score, reverse=True)
@@ -162,7 +209,7 @@ class Orchestrator:
         # Optional: baseline intervention comparison tables for each top target
         baseline_tables: dict[str, list] = {}
         if baseline_table:
-            print(f"\n[6/6] Baseline intervention tables...")
+            print(f"\n[8/{n_steps}] Baseline intervention tables...")
             for t in top:
                 topic = f"{t.gene_symbol} aging intervention lifespan"
                 try:
@@ -181,12 +228,13 @@ class Orchestrator:
             protein_analyses=protein_analyses,
             structure_predictions=structure_predictions,
             druggability=druggability,
+            cadd_results=cadd_results,
             pathways=pathways,
             baseline_tables=baseline_tables,
             findings=findings,
         )
 
-        # Print summary
+        # Step 8: Print summary
         print(f"\n{'='*60}")
         print(f"Discovery Complete")
         print(f"{'='*60}")
@@ -196,9 +244,14 @@ class Orchestrator:
         for i, t in enumerate(top, 1):
             drug_info = druggability.get(t.gene_symbol)
             n_drugs = len(drug_info.known_drugs) if drug_info else 0
+            cadd_res = cadd_results.get(t.gene_symbol)
+            n_hits = len(cadd_res.top_hits) if cadd_res else 0
+            struct = structure_predictions.get(t.gene_symbol)
+            plddt = f"pLDDT={struct.plddt_mean:.0f}" if struct and not struct.error else "no-struct"
             print(f"  {i}. {t.gene_symbol:10s} overall={t.overall_score:.2f} "
                   f"lit={t.score:.2f} drug={t.druggability_score:.2f} "
-                  f"drugs={n_drugs} {'[GenAge]' if t.in_genage else ''}")
+                  f"drugs={n_drugs} hits={n_hits} {plddt} "
+                  f"{'[GenAge]' if t.in_genage else ''}")
         print(f"Aging pathways:  {len(pathways)}")
 
         return report
@@ -232,17 +285,19 @@ class Orchestrator:
             f"",
             f"## Top Targets",
             f"",
-            f"| Rank | Gene | Overall | Literature | Druggability | GenAge | Drugs |",
-            f"|------|------|---------|-----------|-------------|--------|-------|",
+            f"| Rank | Gene | Overall | Literature | Druggability | GenAge | Drugs | CADD Hits |",
+            f"|------|------|---------|-----------|-------------|--------|-------|-----------|",
         ]
 
         for i, t in enumerate(report.targets, 1):
             drug_info = report.druggability.get(t.gene_symbol)
             n_drugs = len(drug_info.known_drugs) if drug_info else 0
             genage = "Yes" if t.in_genage else "-"
+            cadd_res = report.cadd_results.get(t.gene_symbol)
+            n_hits = len(cadd_res.top_hits) if cadd_res else 0
             lines.append(
                 f"| {i} | **{t.gene_symbol}** | {t.overall_score:.2f} | "
-                f"{t.score:.2f} | {t.druggability_score:.2f} | {genage} | {n_drugs} |"
+                f"{t.score:.2f} | {t.druggability_score:.2f} | {genage} | {n_drugs} | {n_hits} |"
             )
 
         # Target details
@@ -259,10 +314,36 @@ class Orchestrator:
             if pa and pa.sequence_length > 0:
                 lines.append(f"- **UniProt**: {pa.uniprot_id} | {pa.sequence_length} aa")
 
+            # Structure prediction
+            sp = report.structure_predictions.get(t.gene_symbol)
+            if sp and not sp.error:
+                lines.append(
+                    f"- **Structure**: pLDDT={sp.plddt_mean:.1f} pTM={sp.ptm:.3f} "
+                    f"({sp.num_residues} residues, {sp.prediction_time_sec:.1f}s)"
+                )
+
             # Druggability
             da = report.druggability.get(t.gene_symbol)
             if da:
                 lines.append(f"- **Druggability**: {da.reasoning}")
+
+            # CADD results
+            cr = report.cadd_results.get(t.gene_symbol)
+            if cr and cr.top_hits:
+                lines.append(
+                    f"- **CADD**: {cr.compounds_fetched} compounds screened, "
+                    f"{cr.compounds_passed_filter} passed Lipinski, "
+                    f"{cr.compounds_docked} docked"
+                )
+                lines.append(f"  - Top hits:")
+                for j, hit in enumerate(cr.top_hits[:5], 1):
+                    aff = f"affinity={hit.affinity_kcal:.1f}" if hit.affinity_kcal else ""
+                    pch = f"pChEMBL={hit.pchembl_value:.1f}" if hit.pchembl_value else ""
+                    metric = aff or pch or "N/A"
+                    lines.append(
+                        f"    {j}. {hit.molecule_chembl_id} QED={hit.qed:.2f} {metric}"
+                    )
+
             lines.append("")
 
         # Pathway analysis

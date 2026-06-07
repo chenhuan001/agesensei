@@ -187,6 +187,33 @@ class TrendingDigest(BaseModel):
     top_papers: list[DigestEntry] = Field(default_factory=list)
 
 
+class DockingHit(BaseModel):
+    """A single compound hit from virtual screening."""
+
+    smiles: str = ""
+    molecule_chembl_id: str = ""
+    affinity_kcal: float | None = None  # Vina binding energy (kcal/mol)
+    pchembl_value: float | None = None  # experimental pChEMBL
+    qed: float = 0.0
+    mw: float = 0.0
+    logp: float = 0.0
+    lipinski_pass: bool = True
+    pose_path: str = ""
+    error: str | None = None
+
+
+class ScreeningResult(BaseModel):
+    """Virtual screening result for one target."""
+
+    gene_symbol: str
+    chembl_target_id: str = ""
+    compounds_fetched: int = 0
+    compounds_docked: int = 0
+    compounds_passed_filter: int = 0
+    top_hits: list[DockingHit] = Field(default_factory=list)
+    error: str | None = None
+
+
 class StructurePrediction(BaseModel):
     """Protenix/AlphaFold3-class structure prediction result."""
 
@@ -212,6 +239,7 @@ class DiscoveryReport(BaseModel):
     protein_analyses: dict[str, ProteinAnalysis] = Field(default_factory=dict)
     structure_predictions: dict[str, StructurePrediction] = Field(default_factory=dict)
     druggability: dict[str, DrugabilityAssessment] = Field(default_factory=dict)
+    cadd_results: dict[str, ScreeningResult] = Field(default_factory=dict)  # CADD virtual screening
     pathways: list[PathwayInfo] = Field(default_factory=list)
     baseline_tables: dict[str, list[BaselineRow]] = Field(default_factory=dict)  # topic -> rows
     findings: list[PaperFinding] = Field(default_factory=list)  # deep-read per-paper findings

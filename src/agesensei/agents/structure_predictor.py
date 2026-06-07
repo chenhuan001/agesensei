@@ -22,7 +22,7 @@ from agesensei.tools.protenix import (
 from agesensei.tools.uniprot import get_sequence
 
 
-class StructurePredictor:
+class StructurePredictAgent:
     """Predict 3D protein structures using Protenix (AlphaFold3-class).
 
     Attributes:
@@ -134,3 +134,7 @@ class StructurePredictor:
                 )
 
         return results
+
+
+# Backwards compatibility alias
+StructurePredictor = StructurePredictAgent
