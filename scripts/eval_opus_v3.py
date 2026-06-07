@@ -12,8 +12,8 @@ sys.stdout = open(sys.stdout.fileno(), mode='w', buffering=1)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-os.environ["ANTHROPIC_BASE_URL"] = "https://www.micuapi.ai"
-os.environ["ANTHROPIC_API_KEY"] = "sk-nVkdz46yKk6tbWWU9KbEOnlCw4AS6BfdPpfvqfBdp14GK7NB"
+# Set ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY env vars before running
+
 
 from agesensei.eval.lab_bench_adapter import (
     AgeSenseiLabBenchAgent, AgentInput, _load_dataset,

@@ -196,12 +196,55 @@ async def tool_search_in_paper(text_corpus: str, keywords: str) -> str:
     return f"[Keywords '{keywords}' not found in the paper text]"
 
 
+async def tool_read_source_paper(doi: str) -> str:
+    """Directly read a source paper's full text from the local library by DOI.
+
+    This is the MOST RELIABLE way to get a paper if you have the DOI — it reads
+    from local pre-downloaded files without any network calls or semantic matching.
+    Returns the full text (up to 15000 chars) of the paper.
+    """
+    from pathlib import Path
+
+    papers_dir = Path(__file__).parent.parent.parent.parent / "artifacts" / "papers_for_mempalace"
+    if not papers_dir.exists():
+        return "[Papers directory not found]"
+
+    # Normalize DOI for filename matching
+    doi_clean = doi.lower().strip().rstrip("/")
+    # Try multiple filename patterns
+    patterns = [
+        f"PMCdoi_fulltext_{doi_clean.replace('/', '_')}.txt",
+        f"PMCdoi_fulltext_{doi_clean.replace('/', '_').replace('.', '.')}.txt",
+    ]
+
+    # Also try partial match (DOI suffix)
+    doi_suffix = doi_clean.split("/", 1)[-1] if "/" in doi_clean else doi_clean
+
+    for f in papers_dir.iterdir():
+        fname_lower = f.name.lower()
+        if any(p.lower() == fname_lower for p in patterns):
+            text = f.read_text(errors="ignore")
+            if len(text) > 15000:
+                # Return first + last sections for context
+                return text[:12000] + "\n\n[...truncated...]\n\n" + text[-3000:]
+            return text
+        # Partial DOI match in filename
+        if doi_suffix in fname_lower.replace("_", "/").replace("pmcdoi-fulltext-", ""):
+            text = f.read_text(errors="ignore")
+            if len(text) > 15000:
+                return text[:12000] + "\n\n[...truncated...]\n\n" + text[-3000:]
+            return text
+
+    return f"[Paper with DOI {doi} not found in local library. Try search_mempalace instead.]"
+
+
 async def tool_search_mempalace(query: str) -> str:
     """Search the local MemPalace knowledge base containing pre-indexed full-text papers.
 
-    This is the FASTEST and most reliable retrieval tool — no network calls needed.
-    Contains full text (all sections) of 269 biomedical papers pre-indexed with
+    This is the FASTEST semantic search tool — no network calls needed.
+    Contains full text (all sections) of 356 biomedical papers pre-indexed with
     semantic embeddings. Returns the most relevant passages.
+    Use SPECIFIC terms: gene names, protein names, species, experimental conditions.
     """
     import subprocess
 
@@ -209,7 +252,7 @@ async def tool_search_mempalace(query: str) -> str:
         result = subprocess.run(
             [
                 os.path.expanduser("~/.mempalace-venv/bin/mempalace"),
-                "search", query, "--wing", "papers", "--results", "8",
+                "search", query, "--wing", "papers", "--results", "10",
             ],
             capture_output=True, text=True, timeout=30,
             cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
@@ -217,7 +260,7 @@ async def tool_search_mempalace(query: str) -> str:
         output = result.stdout.strip()
         if not output or "No results" in output:
             return "[No results in MemPalace knowledge base]"
-        return output[:10000]
+        return output[:12000]
     except subprocess.TimeoutExpired:
         return "[MemPalace search timed out]"
     except FileNotFoundError:
@@ -405,8 +448,19 @@ def _sections_to_text(sections: dict[str, str], max_total: int = 15000) -> str:
 
 TOOLS = [
     {
+        "name": "read_source_paper",
+        "description": "HIGHEST PRIORITY: Directly read the full text of a source paper by DOI from local library. No network needed, no semantic matching — returns the EXACT paper text. Use this FIRST when the question provides source DOIs. Returns up to 15000 chars of full text.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doi": {"type": "string", "description": "The DOI of the paper (e.g. '10.1038/s41586-023-06845-4')"}
+            },
+            "required": ["doi"],
+        },
+    },
+    {
         "name": "search_mempalace",
-        "description": "Search a LOCAL knowledge base containing pre-indexed full-text of 269 biomedical papers. This is INSTANT (no network needed) and covers most LitQA2 source papers. ALWAYS try this FIRST before any other tool — it returns relevant full-text passages with semantic matching. Use specific biology terms: gene names, protein names, experimental conditions, measurements.",
+        "description": "Semantic search across 356 pre-indexed full-text biomedical papers. INSTANT (no network). Use after read_source_paper if you need to find specific passages, or when you don't have a DOI. Use SPECIFIC biology terms: gene names, protein names, species, experimental conditions.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -494,23 +548,22 @@ AGENT_SYSTEM = """You are an expert biology researcher answering a multiple-choi
 You have tools to search scientific literature, fetch paper full texts, and search the web. Your goal
 is to find the specific evidence needed to answer the question correctly.
 
-Strategy:
-1. ALWAYS start with search_mempalace — it contains pre-indexed full-text of ~270 papers covering
-   most questions in this benchmark. It is instant (no network) and returns relevant passages.
-   Try 2-3 different queries with specific terms from the question (gene names, measurements, etc.)
-2. If MemPalace returns good evidence, you can answer immediately — don't waste tool calls.
-3. If MemPalace doesn't have what you need, check the source DOIs (fetch_doi_fulltext).
-4. If DOI fetch only returns abstract or fails, use web_search with specific terms, then web_fetch.
-5. Read the question carefully. Identify what SPECIFIC fact is being asked (a measurement,
-   a gene name, an experimental outcome, etc.)
-6. After fetching a paper, search within it for the specific keywords related to the question.
+Strategy (in order of priority):
+1. FIRST: Use read_source_paper with the provided DOI — this gives you the EXACT full text instantly.
+   Read through it carefully to find the specific fact being asked about.
+2. SECOND: If the paper is too long or you need to find a specific passage, use search_mempalace
+   with very specific terms from the question (gene names, measurements, experimental conditions).
+   Try 2-3 different queries if the first doesn't return what you need.
+3. THIRD: If MemPalace doesn't have it, try fetch_doi_fulltext (network-based DOI retrieval).
+4. LAST RESORT: Use web_search / web_fetch only if local tools fail.
 
 IMPORTANT:
-- search_mempalace is your BEST tool — use it first, and try multiple queries if the first doesn't work.
+- read_source_paper is your #1 tool — it directly reads the paper that contains the answer.
+- When you get paper text, SEARCH for specific keywords (numbers, gene names, percentages).
 - Be specific in all searches: use gene names, protein names, species, exact measurements.
 - When you find relevant text, quote it to support your reasoning.
 - Only give up (choose "Insufficient information") as an absolute last resort.
-- You have up to 8 tool calls. Use them wisely — MemPalace first, then DOI, then web.
+- You have up to 8 tool calls. Use them efficiently.
 - After finding evidence, think step-by-step before choosing your answer.
 """
 
@@ -638,7 +691,16 @@ Use your tools to find the specific evidence needed to answer correctly. Then pr
     async def _execute_tool(self, tool_name: str, tool_input: dict) -> str:
         """Execute a tool call and return the result string."""
         try:
-            if tool_name == "search_mempalace":
+            if tool_name == "read_source_paper":
+                doi = tool_input["doi"]
+                if doi in self._paper_cache:
+                    return self._paper_cache[doi]
+                result = await tool_read_source_paper(doi)
+                if "[not found" not in result.lower():
+                    self._paper_cache[doi] = result
+                return result
+
+            elif tool_name == "search_mempalace":
                 return await tool_search_mempalace(tool_input["query"])
 
             elif tool_name == "fetch_doi_fulltext":

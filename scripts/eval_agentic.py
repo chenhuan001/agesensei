@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-os.environ["ANTHROPIC_BASE_URL"] = "https://www.micuapi.ai"
-os.environ["ANTHROPIC_API_KEY"] = "sk-nVkdz46yKk6tbWWU9KbEOnlCw4AS6BfdPpfvqfBdp14GK7NB"
+# Set ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY env vars before running
+
 
 from datasets import load_dataset
 from agesensei.eval.agentic_adapter import AgenticLabBenchAgent, AgentInput

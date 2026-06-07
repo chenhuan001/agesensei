@@ -1,9 +1,9 @@
-"""v14 eval: MemPalace + 84% full-text + evolink API (Opus 4.6) + retry logic."""
+"""v14 eval: MemPalace + 84% full-text coverage (Opus 4.6) + retry logic."""
 import asyncio, json, os, sys, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-os.environ["ANTHROPIC_BASE_URL"] = "https://api.evolink.ai"
-os.environ["ANTHROPIC_API_KEY"] = "sk-F8eILgP03kRYYuaSzVsxEpAVEv4pROyYhs5Gg9pmp7WNuNC5"
+# Set ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY env vars before running
+
 
 from datasets import load_dataset
 from agesensei.eval.lab_bench_adapter import AgeSenseiLabBenchAgent, AgentInput
@@ -13,7 +13,7 @@ async def main():
     agent = AgeSenseiLabBenchAgent(
         model="claude-opus-4-6",
         use_tools=True,
-        base_url="https://api.evolink.ai",
+        base_url=os.environ.get("ANTHROPIC_BASE_URL"),
     )
 
     # Resume support

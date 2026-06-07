@@ -1,4 +1,4 @@
-"""LAB-Bench LitQA2 evaluation using Opus 4.6 via micuapi."""
+"""LAB-Bench LitQA2 evaluation using Opus 4.6."""
 import asyncio
 import json
 import random
@@ -6,8 +6,8 @@ import os
 import sys
 from pathlib import Path
 
-os.environ['ANTHROPIC_API_KEY'] = 'sk-nVkdz46yKk6tbWWU9KbEOnlCw4AS6BfdPpfvqfBdp14GK7NB'
-os.environ['ANTHROPIC_BASE_URL'] = 'https://www.micuapi.ai'
+
+# Set ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY env vars before running
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -55,7 +55,7 @@ async def run_eval(use_tools: bool, questions: list, out_path: Path):
     agent = AgeSenseiLabBenchAgent(
         model='claude-opus-4-6',
         use_tools=use_tools,
-        base_url='https://www.micuapi.ai',
+        base_url=os.environ.get('ANTHROPIC_BASE_URL'),
     )
 
     results = []
